@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -22,7 +23,7 @@ class OrderItem:
     """Позиция заказа."""
     
     product_name: str
-    price: float
+    price: Decimal
     quantity: int
     id: UUID = field(default_factory=uuid4)
     
@@ -34,7 +35,7 @@ class OrderItem:
             raise ValueError("Quantity must be positive")
     
     @property
-    def total(self) -> float:
+    def subtotal(self) -> Decimal:
         """Стоимость позиции."""
         return self.price * self.quantity
 
@@ -54,7 +55,7 @@ class Order:
     user_id: UUID
     id: UUID = field(default_factory=uuid4)
     status: OrderStatus = field(default=OrderStatus.CREATED)
-    total_amount: float = field(default=0.0)
+    total_amount: Decimal = field(default=Decimal("0.00"))
     created_at: datetime = field(default_factory=datetime.utcnow)
     items: List[OrderItem] = field(default_factory=list)
     status_history: List[OrderStatusChange] = field(default_factory=list)
@@ -71,7 +72,7 @@ class Order:
     
     def _recalculate_total(self) -> None:
         """Пересчитать общую сумму заказа."""
-        self.total_amount = sum(item.total for item in self.items)
+        self.total_amount = sum(item.subtotal for item in self.items)
     
     def pay(self) -> None:
         """Оплатить заказ. Нельзя оплатить дважды!"""

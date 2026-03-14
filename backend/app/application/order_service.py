@@ -1,59 +1,91 @@
 """Сервис для работы с заказами."""
+from __future__ import annotations
 
-import uuid
+from uuid import UUID
 from decimal import Decimal
 from typing import List, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.order import Order, OrderItem, OrderStatus
-from app.domain.exceptions import OrderNotFoundError, UserNotFoundError
+from app.domain.order import Order, OrderItem, OrderStatus, OrderStatusChange
+from app.infrastructure.repositories import OrderRepository
 
 
 class OrderService:
-    """Сервис для операций с заказами."""
-
-    def __init__(self, order_repo, user_repo):
-        self.order_repo = order_repo
-        self.user_repo = user_repo
-
-    # TODO: Реализовать create_order(user_id) -> Order
-    async def create_order(self, user_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.create_order")
-
-    # TODO: Реализовать get_order(order_id) -> Order
-    async def get_order(self, order_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.get_order")
-
-    # TODO: Реализовать add_item(order_id, product_name, price, quantity) -> OrderItem
-    async def add_item(
-        self,
-        order_id: uuid.UUID,
-        product_name: str,
-        price: Decimal,
-        quantity: int,
-    ) -> OrderItem:
-        raise NotImplementedError("TODO: Реализовать OrderService.add_item")
-
-    # TODO: Реализовать pay_order(order_id) -> Order
-    # КРИТИЧНО: гарантировать что нельзя оплатить дважды!
-    async def pay_order(self, order_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.pay_order")
-
-    # TODO: Реализовать cancel_order(order_id) -> Order
-    async def cancel_order(self, order_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.cancel_order")
-
-    # TODO: Реализовать ship_order(order_id) -> Order
-    async def ship_order(self, order_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.ship_order")
-
-    # TODO: Реализовать complete_order(order_id) -> Order
-    async def complete_order(self, order_id: uuid.UUID) -> Order:
-        raise NotImplementedError("TODO: Реализовать OrderService.complete_order")
-
-    # TODO: Реализовать list_orders(user_id: Optional) -> List[Order]
-    async def list_orders(self, user_id: Optional[uuid.UUID] = None) -> List[Order]:
-        raise NotImplementedError("TODO: Реализовать OrderService.list_orders")
-
-    # TODO: Реализовать get_order_history(order_id) -> List[OrderStatusChange]
-    async def get_order_history(self, order_id: uuid.UUID) -> List:
-        raise NotImplementedError("TODO: Реализовать OrderService.get_order_history")
+    """Сервис для управления заказами."""
+    
+    def __init__(self, session: AsyncSession) -> None:
+        """Инициализация сервиса."""
+        self.session = session
+        self.repo = OrderRepository(session)
+    
+    async def create_order(self, user_id: UUID) -> Order:
+        """Создать новый заказ."""
+        order = Order(user_id=user_id)
+        await self.repo.save(order)
+        return order
+    
+    async def get_order(self, order_id: UUID) -> Optional[Order]:
+        """Получить заказ по ID."""
+        return await self.repo.find_by_id(order_id)
+    
+    async def add_item(self, order_id: UUID, product_name: str, price: Decimal, quantity: int) -> Order:
+        """Добавить товар в заказ."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        item = OrderItem(product_name=product_name, price=price, quantity=quantity)
+        order.add_item(item)
+        await self.repo.save(order)
+        return order
+    
+    async def pay_order(self, order_id: UUID) -> Order:
+        """Оплатить заказ."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        order.pay()
+        await self.repo.save(order)
+        return order
+    
+    async def cancel_order(self, order_id: UUID) -> Order:
+        """Отменить заказ."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        order.cancel()
+        await self.repo.save(order)
+        return order
+    
+    async def ship_order(self, order_id: UUID) -> Order:
+        """Отправить заказ."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        order.ship()
+        await self.repo.save(order)
+        return order
+    
+    async def complete_order(self, order_id: UUID) -> Order:
+        """Завершить заказ."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        order.complete()
+        await self.repo.save(order)
+        return order
+    
+    async def list_orders(self) -> List[Order]:
+        """Получить список всех заказов."""
+        return await self.repo.find_all()
+    
+    async def get_order_history(self, order_id: UUID) -> List[OrderStatusChange]:
+        """Получить историю статусов заказа."""
+        order = await self.repo.find_by_id(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        return order.status_history
