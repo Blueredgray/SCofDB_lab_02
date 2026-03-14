@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from datetime import datetime
 from typing import List
 
+from app.domain.exceptions import OrderAlreadyPaidError
+
 
 class OrderStatus(str, Enum):
     """Статусы заказа."""
@@ -65,8 +67,15 @@ class Order:
         if not self.status_history:
             self.status_history.append(OrderStatusChange(self.status))
     
-    def add_item(self, item: OrderItem) -> None:
-        """Добавить товар в заказ."""
+    def add_item(self, product_name: str, price: Decimal, quantity: int) -> None:
+        """Добавить товар в заказ.
+        
+        Args:
+            product_name: Название товара
+            price: Цена товара
+            quantity: Количество
+        """
+        item = OrderItem(product_name=product_name, price=price, quantity=quantity)
         self.items.append(item)
         self._recalculate_total()
     
@@ -76,6 +85,8 @@ class Order:
     
     def pay(self) -> None:
         """Оплатить заказ. Нельзя оплатить дважды!"""
+        if self.status == OrderStatus.PAID:
+            raise OrderAlreadyPaidError(order_id=self.id)
         if self.status != OrderStatus.CREATED:
             raise ValueError(f"Cannot pay order with status {self.status}")
         self.status = OrderStatus.PAID
@@ -83,6 +94,8 @@ class Order:
     
     def cancel(self) -> None:
         """Отменить заказ."""
+        if self.status == OrderStatus.PAID:
+            raise OrderAlreadyPaidError(order_id=self.id, message=f"Cannot cancel paid order {self.id}")
         if self.status not in [OrderStatus.CREATED, OrderStatus.PAID]:
             raise ValueError(f"Cannot cancel order with status {self.status}")
         self.status = OrderStatus.CANCELLED

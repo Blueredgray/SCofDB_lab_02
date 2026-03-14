@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from uuid import UUID
+from decimal import Decimal
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -16,11 +17,11 @@ class UserRepository:
     
     def __init__(self, session: AsyncSession) -> None:
         """Инициализация репозитория."""
-        self.session = session
+        self._session = session
     
     async def save(self, user: User) -> None:
         """Сохранить пользователя."""
-        await self.session.execute(
+        await self._session.execute(
             text("""
                 INSERT INTO users (id, email, name, created_at)
                 VALUES (:id, :email, :name, :created_at)
@@ -35,11 +36,11 @@ class UserRepository:
                 "created_at": user.created_at
             }
         )
-        await self.session.commit()
+        await self._session.commit()
     
     async def find_by_id(self, user_id: UUID) -> Optional[User]:
         """Найти пользователя по ID."""
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id, email, name, created_at FROM users WHERE id = :id"),
             {"id": user_id}
         )
@@ -55,7 +56,7 @@ class UserRepository:
     
     async def find_by_email(self, email: str) -> Optional[User]:
         """Найти пользователя по email."""
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id, email, name, created_at FROM users WHERE email = :email"),
             {"email": email}
         )
@@ -71,7 +72,7 @@ class UserRepository:
     
     async def find_all(self) -> List[User]:
         """Получить всех пользователей."""
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id, email, name, created_at FROM users ORDER BY created_at")
         )
         rows = result.fetchall()
@@ -86,12 +87,12 @@ class OrderRepository:
     
     def __init__(self, session: AsyncSession) -> None:
         """Инициализация репозитория."""
-        self.session = session
+        self._session = session
     
     async def save(self, order: Order) -> None:
         """Сохранить заказ с товарами и историей."""
         # Сохраняем заказ
-        await self.session.execute(
+        await self._session.execute(
             text("""
                 INSERT INTO orders (id, user_id, status, total_amount, created_at)
                 VALUES (:id, :user_id, :status, :total_amount, :created_at)
@@ -109,13 +110,13 @@ class OrderRepository:
         )
         
         # Удаляем старые товары и сохраняем новые
-        await self.session.execute(
+        await self._session.execute(
             text("DELETE FROM order_items WHERE order_id = :order_id"),
             {"order_id": order.id}
         )
         
         for item in order.items:
-            await self.session.execute(
+            await self._session.execute(
                 text("""
                     INSERT INTO order_items (id, order_id, product_name, price, quantity)
                     VALUES (:id, :order_id, :product_name, :price, :quantity)
@@ -129,12 +130,12 @@ class OrderRepository:
                 }
             )
         
-        await self.session.commit()
+        await self._session.commit()
     
     async def find_by_id(self, order_id: UUID) -> Optional[Order]:
         """Найти заказ по ID со всеми данными."""
         # Загружаем заказ
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id, user_id, status, total_amount, created_at FROM orders WHERE id = :id"),
             {"id": order_id}
         )
@@ -151,7 +152,7 @@ class OrderRepository:
         )
         
         # Загружаем товары
-        items_result = await self.session.execute(
+        items_result = await self._session.execute(
             text("SELECT id, product_name, price, quantity FROM order_items WHERE order_id = :order_id"),
             {"order_id": order_id}
         )
@@ -164,7 +165,7 @@ class OrderRepository:
             ))
         
         # Загружаем историю статусов
-        history_result = await self.session.execute(
+        history_result = await self._session.execute(
             text("SELECT status, created_at FROM order_status_history WHERE order_id = :order_id ORDER BY created_at"),
             {"order_id": order_id}
         )
@@ -177,7 +178,7 @@ class OrderRepository:
     
     async def find_by_user(self, user_id: UUID) -> List[Order]:
         """Найти заказы пользователя."""
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id FROM orders WHERE user_id = :user_id ORDER BY created_at DESC"),
             {"user_id": user_id}
         )
@@ -192,7 +193,7 @@ class OrderRepository:
     
     async def find_all(self) -> List[Order]:
         """Получить все заказы."""
-        result = await self.session.execute(
+        result = await self._session.execute(
             text("SELECT id FROM orders ORDER BY created_at DESC")
         )
         order_ids = [row[0] for row in result.fetchall()]

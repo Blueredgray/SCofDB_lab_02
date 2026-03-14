@@ -15,12 +15,14 @@ class InvalidEmailError(DomainException):
         super().__init__(f"Invalid email format: {email}")
 
 
-class OrderAlreadyPaidError(DomainException):
-    """Raised when attempting to pay an already paid order."""
-
-    def __init__(self, order_id):
+class OrderAlreadyPaidError(Exception):
+    """Заказ уже оплачен."""
+    
+    def __init__(self, order_id=None, message=None):
         self.order_id = order_id
-        super().__init__(f"Order {order_id} is already paid")
+        if message is None and order_id:
+            message = f"Order {order_id} is already paid"
+        super().__init__(message)
 
 
 class OrderCancelledError(DomainException):

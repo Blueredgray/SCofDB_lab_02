@@ -34,8 +34,7 @@ class OrderService:
         if not order:
             raise ValueError(f"Order {order_id} not found")
         
-        item = OrderItem(product_name=product_name, price=price, quantity=quantity)
-        order.add_item(item)
+        order.add_item(product_name, price, quantity)
         await self.repo.save(order)
         return order
     
