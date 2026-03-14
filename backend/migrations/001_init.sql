@@ -58,3 +58,40 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id);
+
+-- CRITICAL: Триггер для предотвращения двойной оплаты заказа
+CREATE OR REPLACE FUNCTION check_double_payment()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Проверяем, не пытаемся ли оплатить уже оплаченный заказ
+    IF OLD.status = 'paid' AND NEW.status = 'paid' THEN
+        RAISE EXCEPTION 'Order is already paid. Double payment is not allowed.';
+    END IF;
+    
+    -- Проверяем валидность перехода статуса
+    IF OLD.status = 'created' AND NEW.status NOT IN ('paid', 'cancelled') THEN
+        RAISE EXCEPTION 'Invalid status transition from created to %', NEW.status;
+    END IF;
+    
+    IF OLD.status = 'paid' AND NEW.status NOT IN ('shipped', 'cancelled') THEN
+        RAISE EXCEPTION 'Invalid status transition from paid to %', NEW.status;
+    END IF;
+    
+    IF OLD.status = 'shipped' AND NEW.status != 'completed' THEN
+        RAISE EXCEPTION 'Invalid status transition from shipped to %', NEW.status;
+    END IF;
+    
+    IF OLD.status IN ('cancelled', 'completed') THEN
+        RAISE EXCEPTION 'Cannot change status of % order', OLD.status;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Создаём триггер на таблицу orders
+DROP TRIGGER IF EXISTS prevent_double_payment ON orders;
+CREATE TRIGGER prevent_double_payment
+    BEFORE UPDATE ON orders
+    FOR EACH ROW
+    EXECUTE FUNCTION check_double_payment();
