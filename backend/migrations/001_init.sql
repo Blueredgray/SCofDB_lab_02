@@ -1,97 +1,141 @@
--- Миграция: начальная схема БД маркетплейса
--- Создаёт таблицы users, orders, order_items, order_statuses, order_status_history
+-- ============================================
+-- Database schema for marketplace
+-- Lab 01 base + Lab 02 requirements
+-- ============================================
 
--- Справочник статусов заказов
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Status lookup table
 CREATE TABLE IF NOT EXISTS order_statuses (
     status VARCHAR(20) PRIMARY KEY,
     description TEXT
 );
 
+-- Insert status values
 INSERT INTO order_statuses (status, description) VALUES
-    ('created', 'Заказ создан'),
-    ('paid', 'Заказ оплачен'),
-    ('cancelled', 'Заказ отменен'),
-    ('shipped', 'Заказ отправлен'),
-    ('completed', 'Заказ завершен')
+    ('created', 'Order created'),
+    ('paid', 'Order paid'),
+    ('cancelled', 'Order cancelled'),
+    ('shipped', 'Order shipped'),
+    ('completed', 'Order completed')
 ON CONFLICT (status) DO NOTHING;
 
--- Таблица пользователей
+-- Users table
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL UNIQUE,
-    name VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT valid_email CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+    name VARCHAR(255) NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT email_format_check CHECK (
+        email ~ '^[a-zA-Z0-9][a-zA-Z0-9._%-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$'
+    )
 );
 
--- Таблица заказов
+-- Orders table
 CREATE TABLE IF NOT EXISTS orders (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    status VARCHAR(20) NOT NULL DEFAULT 'created' REFERENCES order_statuses(status),
-    total_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.0,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT positive_total CHECK (total_amount >= 0)
+    status VARCHAR(20) NOT NULL REFERENCES order_statuses(status),
+    total_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00 CHECK (total_amount >= 0),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Таблица позиций заказа
+-- Order items table
 CREATE TABLE IF NOT EXISTS order_items (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    product_name VARCHAR(255) NOT NULL,
-    price DECIMAL(10, 2) NOT NULL,
-    quantity INTEGER NOT NULL,
-    CONSTRAINT positive_price CHECK (price >= 0),
-    CONSTRAINT positive_quantity CHECK (quantity > 0)
+    product_name VARCHAR(255) NOT NULL CHECK (LENGTH(TRIM(product_name)) > 0),
+    price NUMERIC(15, 2) NOT NULL CHECK (price >= 0),
+    quantity INTEGER NOT NULL CHECK (quantity > 0)
 );
 
--- Таблица истории изменения статусов
+-- Order status history table
 CREATE TABLE IF NOT EXISTS order_status_history (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     status VARCHAR(20) NOT NULL REFERENCES order_statuses(status),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Индексы для производительности
-CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
-CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id);
-
--- CRITICAL: Триггер для предотвращения двойной оплаты заказа
-CREATE OR REPLACE FUNCTION check_double_payment()
+-- ============================================
+-- CRITICAL INVARIANT: Cannot pay order twice
+-- ============================================
+-- Trigger function to check double payment
+CREATE OR REPLACE FUNCTION check_order_not_already_paid() 
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Проверяем, не пытаемся ли оплатить уже оплаченный заказ
-    IF OLD.status = 'paid' AND NEW.status = 'paid' THEN
-        RAISE EXCEPTION 'Order is already paid. Double payment is not allowed.';
+    IF NEW.status = 'paid' THEN
+        IF EXISTS (
+            SELECT 1 FROM order_status_history
+            WHERE order_id = NEW.id AND status = 'paid'
+        ) THEN
+            RAISE EXCEPTION 'Order % is already paid', NEW.id;
+        END IF;
     END IF;
-    
-    -- Проверяем валидность перехода статуса
-    IF OLD.status = 'created' AND NEW.status NOT IN ('paid', 'cancelled') THEN
-        RAISE EXCEPTION 'Invalid status transition from created to %', NEW.status;
-    END IF;
-    
-    IF OLD.status = 'paid' AND NEW.status NOT IN ('shipped', 'cancelled') THEN
-        RAISE EXCEPTION 'Invalid status transition from paid to %', NEW.status;
-    END IF;
-    
-    IF OLD.status = 'shipped' AND NEW.status != 'completed' THEN
-        RAISE EXCEPTION 'Invalid status transition from shipped to %', NEW.status;
-    END IF;
-    
-    IF OLD.status IN ('cancelled', 'completed') THEN
-        RAISE EXCEPTION 'Cannot change status of % order', OLD.status;
-    END IF;
-    
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- Создаём триггер на таблицу orders
-DROP TRIGGER IF EXISTS prevent_double_payment ON orders;
-CREATE TRIGGER prevent_double_payment
+-- Trigger on order update
+CREATE TRIGGER trigger_check_order_not_already_paid
     BEFORE UPDATE ON orders
     FOR EACH ROW
-    EXECUTE FUNCTION check_double_payment();
+    WHEN (NEW.status <> OLD.status)
+    EXECUTE FUNCTION check_order_not_already_paid();
+
+-- ============================================
+-- Bonus triggers (optional)
+-- ============================================
+
+-- Auto-update total_amount when items change
+CREATE OR REPLACE FUNCTION update_order_total_amount() 
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE orders
+    SET total_amount = (
+        SELECT COALESCE(SUM(price * quantity), 0)
+        FROM order_items
+        WHERE order_id = COALESCE(NEW.order_id, OLD.order_id)
+    )
+    WHERE id = COALESCE(NEW.order_id, OLD.order_id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_order_total_after_item_change
+    AFTER INSERT OR UPDATE OR DELETE ON order_items
+    FOR EACH ROW
+    EXECUTE FUNCTION update_order_total_amount();
+
+-- Auto-log status changes
+CREATE OR REPLACE FUNCTION log_order_status_change() 
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status <> OLD.status THEN
+        INSERT INTO order_status_history (order_id, status, changed_at)
+        VALUES (NEW.id, NEW.status, CURRENT_TIMESTAMP);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_log_order_status_change
+    AFTER UPDATE ON orders
+    FOR EACH ROW
+    EXECUTE FUNCTION log_order_status_change();
+
+-- Auto-log initial status on order creation
+CREATE OR REPLACE FUNCTION insert_initial_order_status() 
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO order_status_history (order_id, status, changed_at)
+    VALUES (NEW.id, NEW.status, NEW.created_at);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_insert_initial_order_status
+    AFTER INSERT ON orders
+    FOR EACH ROW
+    EXECUTE FUNCTION insert_initial_order_status();

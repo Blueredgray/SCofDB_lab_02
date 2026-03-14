@@ -3,7 +3,6 @@
 
 class DomainException(Exception):
     """Base exception for domain errors."""
-
     pass
 
 
@@ -15,14 +14,12 @@ class InvalidEmailError(DomainException):
         super().__init__(f"Invalid email format: {email}")
 
 
-class OrderAlreadyPaidError(Exception):
-    """Заказ уже оплачен."""
-    
-    def __init__(self, order_id=None, message=None):
+class OrderAlreadyPaidError(DomainException):
+    """Raised when attempting to pay an already paid order."""
+
+    def __init__(self, order_id):
         self.order_id = order_id
-        if message is None and order_id:
-            message = f"Order {order_id} is already paid"
-        super().__init__(message)
+        super().__init__(f"Order {order_id} is already paid")
 
 
 class OrderCancelledError(DomainException):

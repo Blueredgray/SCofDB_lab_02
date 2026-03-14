@@ -1,18 +1,19 @@
-"""Доменная модель заказа."""
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from decimal import Decimal
+"""Order domain models with status management."""
+import uuid
 from enum import Enum
-from uuid import UUID, uuid4
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List
+from .exceptions import (
+    OrderAlreadyPaidError, 
+    OrderCancelledError,
+    InvalidQuantityError,
+    InvalidPriceError
+)
 
-from app.domain.exceptions import OrderAlreadyPaidError
 
-
-class OrderStatus(str, Enum):
-    """Статусы заказа."""
+class OrderStatus(Enum):
+    """Order status enum."""
     CREATED = "created"
     PAID = "paid"
     CANCELLED = "cancelled"
@@ -22,95 +23,93 @@ class OrderStatus(str, Enum):
 
 @dataclass
 class OrderItem:
-    """Позиция заказа."""
-    
+    """Item in order with price and quantity."""
+
     product_name: str
-    price: Decimal
+    price: float
     quantity: int
-    id: UUID = field(default_factory=uuid4)
-    
-    def __post_init__(self) -> None:
-        """Валидация цены и количества."""
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+
+    def __post_init__(self):
+        """Validate price and quantity."""
         if self.price < 0:
-            raise ValueError("Price cannot be negative")
+            raise InvalidPriceError(self.price)
         if self.quantity <= 0:
-            raise ValueError("Quantity must be positive")
-    
+            raise InvalidQuantityError(self.quantity)
+
     @property
-    def subtotal(self) -> Decimal:
-        """Стоимость позиции."""
+    def total(self) -> float:
+        """Calculate item total."""
         return self.price * self.quantity
 
 
 @dataclass
 class OrderStatusChange:
-    """Запись об изменении статуса заказа."""
-    
-    status: OrderStatus
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    """Record of status change."""
+
+    status: str
+    changed_at: datetime = field(default_factory=datetime.now)
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
 
 
 @dataclass
 class Order:
-    """Заказ пользователя."""
-    
-    user_id: UUID
-    id: UUID = field(default_factory=uuid4)
+    """Order aggregate root with business rules."""
+
+    user_id: uuid.UUID
     status: OrderStatus = field(default=OrderStatus.CREATED)
-    total_amount: Decimal = field(default=Decimal("0.00"))
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    total_amount: float = field(default=0.0)
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    created_at: datetime = field(default_factory=datetime.now)
     items: List[OrderItem] = field(default_factory=list)
     status_history: List[OrderStatusChange] = field(default_factory=list)
-    
-    def __post_init__(self) -> None:
-        """Инициализация истории статусов."""
+
+    def __post_init__(self):
+        """Initialize status history."""
         if not self.status_history:
-            self.status_history.append(OrderStatusChange(self.status))
-    
-    def add_item(self, product_name: str, price: Decimal, quantity: int) -> None:
-        """Добавить товар в заказ.
-        
-        Args:
-            product_name: Название товара
-            price: Цена товара
-            quantity: Количество
-        """
-        item = OrderItem(product_name=product_name, price=price, quantity=quantity)
+            self._add_status_history()
+
+    def _add_status_history(self):
+        """Add current status to history."""
+        self.status_history.append(OrderStatusChange(status=self.status.value))
+
+    def add_item(self, item: OrderItem):
+        """Add item to order."""
         self.items.append(item)
         self._recalculate_total()
-    
-    def _recalculate_total(self) -> None:
-        """Пересчитать общую сумму заказа."""
-        self.total_amount = sum(item.subtotal for item in self.items)
-    
-    def pay(self) -> None:
-        """Оплатить заказ. Нельзя оплатить дважды!"""
+
+    def _recalculate_total(self):
+        """Recalculate order total from items."""
+        self.total_amount = sum(item.total for item in self.items)
+
+    def pay(self):
+        """Pay order - critical: cannot pay twice!"""
         if self.status == OrderStatus.PAID:
-            raise OrderAlreadyPaidError(order_id=self.id)
-        if self.status != OrderStatus.CREATED:
-            raise ValueError(f"Cannot pay order with status {self.status}")
+            raise OrderAlreadyPaidError(self.id)
+        if self.status == OrderStatus.CANCELLED:
+            raise OrderCancelledError(self.id)
         self.status = OrderStatus.PAID
-        self.status_history.append(OrderStatusChange(self.status))
-    
-    def cancel(self) -> None:
-        """Отменить заказ."""
+        self._add_status_history()
+
+    def cancel(self):
+        """Cancel order."""
         if self.status == OrderStatus.PAID:
-            raise OrderAlreadyPaidError(order_id=self.id, message=f"Cannot cancel paid order {self.id}")
-        if self.status not in [OrderStatus.CREATED, OrderStatus.PAID]:
-            raise ValueError(f"Cannot cancel order with status {self.status}")
+            raise OrderAlreadyPaidError(self.id)
+        if self.status == OrderStatus.CANCELLED:
+            return
         self.status = OrderStatus.CANCELLED
-        self.status_history.append(OrderStatusChange(self.status))
-    
-    def ship(self) -> None:
-        """Отправить заказ."""
+        self._add_status_history()
+
+    def ship(self):
+        """Ship order."""
         if self.status != OrderStatus.PAID:
-            raise ValueError(f"Cannot ship order with status {self.status}")
+            raise DomainException("Order must be paid before shipping")
         self.status = OrderStatus.SHIPPED
-        self.status_history.append(OrderStatusChange(self.status))
-    
-    def complete(self) -> None:
-        """Завершить заказ."""
+        self._add_status_history()
+
+    def complete(self):
+        """Complete order."""
         if self.status != OrderStatus.SHIPPED:
-            raise ValueError(f"Cannot complete order with status {self.status}")
+            raise DomainException("Order must be shipped before completion")
         self.status = OrderStatus.COMPLETED
-        self.status_history.append(OrderStatusChange(self.status))
+        self._add_status_history()

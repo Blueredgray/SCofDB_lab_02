@@ -1,28 +1,27 @@
-"""Доменная модель пользователя."""
-from __future__ import annotations
-
+"""User domain model."""
+import uuid
 import re
 from dataclasses import dataclass, field
-from uuid import UUID, uuid4
 from datetime import datetime
+from .exceptions import InvalidEmailError
 
 
 @dataclass
 class User:
-    """Пользователь маркетплейса."""
-    
+    """User entity with email validation."""
+
     email: str
-    name: str = ""
-    id: UUID = field(default_factory=uuid4)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    
-    def __post_init__(self) -> None:
-        """Валидация email после инициализации."""
+    name: str
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    created_at: datetime = field(default_factory=datetime.now)
+
+    def __post_init__(self):
+        """Validate email format after initialization."""
         if not self._is_valid_email(self.email):
-            raise ValueError(f"Invalid email format: {self.email}")
-    
+            raise InvalidEmailError(self.email)
+
     @staticmethod
     def _is_valid_email(email: str) -> bool:
-        """Проверка формата email."""
-        pattern = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+        """Check email format with regex."""
+        pattern = r'^[a-zA-Z0-9][a-zA-Z0-9._%-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$'
         return bool(re.match(pattern, email))
