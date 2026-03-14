@@ -1,6 +1,6 @@
-"""Test demonstrating race condition problem.
+"""Тест демонстрации проблемы race condition.
 
-This test PASSES by confirming that pay_order_unsafe() causes double payment.
+Этот тест ПРОХОДИТ, подтверждая что pay_order_unsafe() ломается.
 """
 import asyncio
 import pytest
@@ -10,13 +10,12 @@ from sqlalchemy import text
 from app.application.payment_service import PaymentService
 from app.domain.exceptions import OrderAlreadyPaidError, OrderNotFoundError
 
-# Use same DB as app
 DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/marketplace"
 
 
 @pytest.fixture(scope="module")
 async def test_engine():
-    """Create async engine for tests."""
+    """Создать движок для тестов."""
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
@@ -30,20 +29,20 @@ async def test_engine():
 
 @pytest.fixture
 async def db_session(test_engine):
-    """Create DB session for tests."""
+    """Создать сессию БД."""
     async with AsyncSession(test_engine) as session:
         yield session
 
 
 @pytest.fixture
 async def test_order(test_engine):
-    """Create test order with status 'created'."""
+    """Создать тестовый заказ со статусом 'created'."""
     user_id = uuid.uuid4()
     order_id = uuid.uuid4()
 
     async with AsyncSession(test_engine) as setup_session:
         async with setup_session.begin():
-            # Create user
+            # Создаём пользователя
             await setup_session.execute(
                 text("""
                     INSERT INTO users (id, email, name, created_at)
@@ -57,7 +56,7 @@ async def test_order(test_engine):
                 }
             )
 
-            # Create order
+            # Создаём заказ
             await setup_session.execute(
                 text("""
                     INSERT INTO orders (id, user_id, status, total_amount, created_at)
@@ -66,7 +65,7 @@ async def test_order(test_engine):
                 {"order_id": order_id, "user_id": user_id}
             )
 
-            # Add history record
+            # Записываем начальный статус
             await setup_session.execute(
                 text("""
                     INSERT INTO order_status_history (id, order_id, status, changed_at)
@@ -77,7 +76,7 @@ async def test_order(test_engine):
 
     yield order_id
 
-    # Cleanup
+    # Очистка после теста
     async with AsyncSession(test_engine) as cleanup_session:
         async with cleanup_session.begin():
             await cleanup_session.execute(
@@ -98,55 +97,48 @@ async def test_order(test_engine):
 async def test_concurrent_payment_unsafe_demonstrates_race_condition(
     db_session, test_order, test_engine
 ):
-    """Test shows race condition with unsafe payment.
+    """Тест демонстрирует race condition при pay_order_unsafe().
 
-    Expected: test PASSES confirming double payment occurred.
+    ОЖИДАЕТСЯ: Тест ПРОХОДИТ, заказ оплачен дважды.
     """
     order_id = test_order
 
     async def payment_attempt_1():
-        """First concurrent payment."""
         async with AsyncSession(test_engine) as session1:
             service1 = PaymentService(session1)
             return await service1.pay_order_unsafe(order_id)
 
     async def payment_attempt_2():
-        """Second concurrent payment."""
         async with AsyncSession(test_engine) as session2:
             service2 = PaymentService(session2)
             return await service2.pay_order_unsafe(order_id)
 
-    # Run two payments concurrently
+    # Запускаем параллельно
     results = await asyncio.gather(
         payment_attempt_1(),
         payment_attempt_2(),
         return_exceptions=True
     )
 
-    # Small delay for DB to settle
     await asyncio.sleep(0.2)
 
-    # Check payment history
+    # Проверяем историю
     async with AsyncSession(test_engine) as check_session:
         service = PaymentService(check_session)
         history = await service.get_payment_history(order_id)
 
-        # Assert double payment occurred (race condition!)
-        assert len(history) == 2, (
-            f"Expected 2 payments (RACE CONDITION!), got {len(history)}"
-        )
+    # Две записи об оплате - RACE CONDITION!
+    assert len(history) == 2, f"Ожидалось 2 записи, получено {len(history)}"
 
-        print(f"
-⚠️  RACE CONDITION DETECTED!")
-        print(f"Order {order_id} was paid TWICE:")
-        for record in history:
-            print(f"  - {record['changed_at']}: status = {record['status']}")
+    print(f"\n⚠️ RACE CONDITION DETECTED!")
+    print(f"Order {order_id} was paid TWICE:")
+    for record in history:
+        print(f"  - {record['changed_at']}: status = {record['status']}")
 
-        # Show results
-        for i, result in enumerate(results):
-            status = "Success" if not isinstance(result, Exception) else f"Error: {type(result).__name__}"
-            print(f"Attempt {i+1}: {status}")
+    print(f"Попытка 1: {'Успешно' if not isinstance(results[0], Exception) else f'Ошибка: {type(results[0]).__name__}'}")
+    print(f"Попытка 2: {'Успешно' if not isinstance(results[1], Exception) else f'Ошибка: {type(results[1]).__name__}'}")
 
 
 if __name__ == "__main__":
+    """Запуск: pytest app/tests/test_concurrent_payment_unsafe.py -v -s"""
     pytest.main([__file__, "-v", "-s"])

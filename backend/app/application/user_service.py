@@ -1,41 +1,33 @@
-"""User service for registration and management."""
+"""Сервис для работы с пользователями."""
+
 import uuid
-from typing import List, Optional
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, List
+
 from app.domain.user import User
 from app.domain.exceptions import EmailAlreadyExistsError, UserNotFoundError
-from app.infrastructure.repositories import UserRepository
 
 
 class UserService:
-    """Service for user operations."""
+    """Сервис для операций с пользователями."""
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
-        self.repo = UserRepository(session)
+    def __init__(self, repo):
+        self.repo = repo
 
-    async def register(self, email: str, name: str) -> User:
-        """Register new user."""
-        # Check email exists
-        existing = await self.repo.find_by_email(email)
-        if existing:
-            raise EmailAlreadyExistsError(email)
+    # TODO: Реализовать register(email, name) -> User
+    # 1. Проверить что email не занят
+    # 2. Создать User
+    # 3. Сохранить через repo.save()
+    async def register(self, email: str, name: str = "") -> User:
+        raise NotImplementedError("TODO: Реализовать UserService.register")
 
-        user = User(email=email, name=name)
-        await self.repo.save(user)
-        return user
-
+    # TODO: Реализовать get_by_id(user_id) -> User
     async def get_by_id(self, user_id: uuid.UUID) -> User:
-        """Get user by ID."""
-        user = await self.repo.find_by_id(user_id)
-        if not user:
-            raise UserNotFoundError(user_id)
-        return user
+        raise NotImplementedError("TODO: Реализовать UserService.get_by_id")
 
+    # TODO: Реализовать get_by_email(email) -> Optional[User]
     async def get_by_email(self, email: str) -> Optional[User]:
-        """Get user by email."""
-        return await self.repo.find_by_email(email)
+        raise NotImplementedError("TODO: Реализовать UserService.get_by_email")
 
+    # TODO: Реализовать list_users() -> List[User]
     async def list_users(self) -> List[User]:
-        """List all users."""
-        return await self.repo.find_all()
+        raise NotImplementedError("TODO: Реализовать UserService.list_users")

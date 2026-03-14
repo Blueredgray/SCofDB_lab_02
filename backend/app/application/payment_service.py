@@ -1,7 +1,4 @@
-"""Payment service with concurrent access control.
-
-Demonstrates race condition problem and solution using isolation levels.
-"""
+"""Сервис оплаты с демонстрацией race condition."""
 import uuid
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,28 +6,18 @@ from app.domain.exceptions import OrderAlreadyPaidError, OrderNotFoundError
 
 
 class PaymentService:
-    """Service for processing payments with different isolation levels."""
+    """Сервис обработки платежей с разными уровнями изоляции."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def pay_order_unsafe(self, order_id: uuid.UUID) -> dict:
-        """UNSAFE payment - READ COMMITTED without locks.
+        """Небезопасная оплата - READ COMMITTED без блокировок.
 
-        Race condition: two concurrent calls can double-pay!
-
-        Args:
-            order_id: Order UUID to pay
-
-        Returns:
-            Dict with payment result
-
-        Raises:
-            OrderNotFoundError: Order doesn't exist
-            OrderAlreadyPaidError: Order already paid (but race condition possible!)
+        Ломается при конкурентных запросах - двойная оплата!
         """
         async with self.session.begin():
-            # Read status - no lock, default READ COMMITTED
+            # Читаем статус без блокировки
             result = await self.session.execute(
                 text("SELECT status FROM orders WHERE id = :order_id"),
                 {"order_id": order_id}
@@ -45,13 +32,13 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # Update status
+            # Обновляем статус
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
                 {"order_id": order_id}
             )
 
-            # Insert history
+            # Записываем в историю
             await self.session.execute(
                 text("""
                     INSERT INTO order_status_history (id, order_id, status, changed_at)
@@ -63,37 +50,25 @@ class PaymentService:
         return {
             "order_id": str(order_id),
             "status": "paid",
-            "message": "Order paid successfully (unsafe method)"
+            "message": "Order paid successfully (unsafe)"
         }
 
     async def pay_order_safe(self, order_id: uuid.UUID) -> dict:
-        """SAFE payment - REPEATABLE READ + FOR UPDATE.
+        """Безопасная оплата - REPEATABLE READ + FOR UPDATE.
 
-        Prevents race condition with proper locking.
-
-        Args:
-            order_id: Order UUID to pay
-
-        Returns:
-            Dict with payment result
-
-        Raises:
-            OrderNotFoundError: Order doesn't exist
-            OrderAlreadyPaidError: Order already paid (blocked by lock)
+        Корректно работает при конкурентных запросах.
         """
         async with self.session.begin():
-            # Set isolation level
+            # Устанавливаем уровень изоляции
             await self.session.execute(
                 text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             )
 
-            # Lock row for update - blocks concurrent access
+            # Блокируем строку для обновления
             result = await self.session.execute(
                 text("""
-                    SELECT status 
-                    FROM orders 
-                    WHERE id = :order_id 
-                    FOR UPDATE
+                    SELECT status FROM orders
+                    WHERE id = :order_id FOR UPDATE
                 """),
                 {"order_id": order_id}
             )
@@ -107,13 +82,13 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # Update status
+            # Обновляем статус
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
                 {"order_id": order_id}
             )
 
-            # Insert history
+            # Записываем в историю
             await self.session.execute(
                 text("""
                     INSERT INTO order_status_history (id, order_id, status, changed_at)
@@ -125,20 +100,11 @@ class PaymentService:
         return {
             "order_id": str(order_id),
             "status": "paid",
-            "message": "Order paid successfully (safe method)"
+            "message": "Order paid successfully (safe)"
         }
 
     async def get_payment_history(self, order_id: uuid.UUID) -> list[dict]:
-        """Get payment history for order.
-
-        Used to check how many times order was paid.
-
-        Args:
-            order_id: Order UUID
-
-        Returns:
-            List of payment records
-        """
+        """Получить историю оплат заказа."""
         result = await self.session.execute(
             text("""
                 SELECT id, order_id, status, changed_at
@@ -150,12 +116,14 @@ class PaymentService:
         )
 
         rows = result.fetchall()
-        return [
-            {
+        history = []
+
+        for row in rows:
+            history.append({
                 "id": str(row[0]),
                 "order_id": str(row[1]),
                 "status": row[2],
                 "changed_at": row[3]
-            }
-            for row in rows
-        ]
+            })
+
+        return history

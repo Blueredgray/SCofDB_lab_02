@@ -1,1 +1,1 @@
-# App package
+# Marketplace application
