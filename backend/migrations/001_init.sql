@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT email_check CHECK (email ~* '^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+[.][A-Za-z]+$')
 );
 
--- Таблица заказов (для lab02 используем status VARCHAR вместо status_id)
+-- Таблица заказов
 CREATE TABLE IF NOT EXISTS orders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -54,3 +54,49 @@ CREATE TABLE IF NOT EXISTS order_status_history (
 CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id);
+
+-- ==================================================
+-- ТРИГГЕР: Предотвращение двойной оплаты
+-- ==================================================
+
+CREATE OR REPLACE FUNCTION prevent_double_payment()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status = 'paid' THEN
+        IF EXISTS (
+            SELECT 1 FROM order_status_history 
+            WHERE order_id = NEW.id AND status = 'paid'
+        ) THEN
+            RAISE EXCEPTION 'Order % has already been paid.', NEW.id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_prevent_double_payment ON orders;
+CREATE TRIGGER trg_prevent_double_payment
+BEFORE UPDATE ON orders
+FOR EACH ROW
+EXECUTE FUNCTION prevent_double_payment();
+
+-- ==================================================
+-- ТРИГГЕР: Логирование изменений статуса
+-- ==================================================
+
+CREATE OR REPLACE FUNCTION log_status_change()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') OR (OLD.status IS DISTINCT FROM NEW.status) THEN
+        INSERT INTO order_status_history (id, order_id, status, changed_at)
+        VALUES (uuid_generate_v4(), NEW.id, NEW.status, NOW());
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_log_status_change ON orders;
+CREATE TRIGGER trg_log_status_change
+AFTER INSERT OR UPDATE ON orders
+FOR EACH ROW
+EXECUTE FUNCTION log_status_change();
