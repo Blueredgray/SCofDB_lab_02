@@ -15,9 +15,10 @@ class PaymentService:
         """Небезопасная оплата - READ COMMITTED без блокировок.
 
         Ломается при конкурентных запросах - двойная оплата!
+        Триггер log_status_change записывает в историю после каждого UPDATE.
         """
         async with self.session.begin():
-            # Читаем статус без блокировки
+            # READ COMMITTED (по умолчанию) - видит только закоммиченные данные
             result = await self.session.execute(
                 text("SELECT status FROM orders WHERE id = :order_id"),
                 {"order_id": order_id}
@@ -32,18 +33,9 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # Обновляем статус
+            # Триггер log_status_change автоматически добавит запись в историю
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
-                {"order_id": order_id}
-            )
-
-            # Записываем в историю
-            await self.session.execute(
-                text("""
-                    INSERT INTO order_status_history (id, order_id, status, changed_at)
-                    VALUES (gen_random_uuid(), :order_id, 'paid', NOW())
-                """),
                 {"order_id": order_id}
             )
 
@@ -56,15 +48,16 @@ class PaymentService:
     async def pay_order_safe(self, order_id: uuid.UUID) -> dict:
         """Безопасная оплата - REPEATABLE READ + FOR UPDATE.
 
-        Корректно работает при конкурентных запросах.
+        FOR UPDATE блокирует строку, второй транзакции придётся ждать.
+        После коммита первой, вторая увидит изменённый статус.
         """
         async with self.session.begin():
-            # Устанавливаем уровень изоляции
+            # REPEATABLE READ - транзакция видит снапшот данных на момент начала
             await self.session.execute(
                 text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             )
 
-            # Блокируем строку для обновления
+            # FOR UPDATE блокирует строку до конца транзакции
             result = await self.session.execute(
                 text("""
                     SELECT status FROM orders
@@ -82,18 +75,9 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # Обновляем статус
+            # Триггер log_status_change автоматически добавит запись в историю
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
-                {"order_id": order_id}
-            )
-
-            # Записываем в историю
-            await self.session.execute(
-                text("""
-                    INSERT INTO order_status_history (id, order_id, status, changed_at)
-                    VALUES (gen_random_uuid(), :order_id, 'paid', NOW())
-                """),
                 {"order_id": order_id}
             )
 
@@ -123,7 +107,7 @@ class PaymentService:
                 "id": str(row[0]),
                 "order_id": str(row[1]),
                 "status": row[2],
-                "changed_at": row[3]
+                "changed_at": str(row[3])
             })
 
         return history

@@ -56,32 +56,8 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id);
 
 -- ==================================================
--- ТРИГГЕР: Предотвращение двойной оплаты
--- ==================================================
-
-CREATE OR REPLACE FUNCTION prevent_double_payment()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.status = 'paid' THEN
-        IF EXISTS (
-            SELECT 1 FROM order_status_history 
-            WHERE order_id = NEW.id AND status = 'paid'
-        ) THEN
-            RAISE EXCEPTION 'Order % has already been paid.', NEW.id;
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_prevent_double_payment ON orders;
-CREATE TRIGGER trg_prevent_double_payment
-BEFORE UPDATE ON orders
-FOR EACH ROW
-EXECUTE FUNCTION prevent_double_payment();
-
--- ==================================================
 -- ТРИГГЕР: Логирование изменений статуса
+-- Вставляет запись в историю при каждом изменении статуса
 -- ==================================================
 
 CREATE OR REPLACE FUNCTION log_status_change()
@@ -100,3 +76,10 @@ CREATE TRIGGER trg_log_status_change
 AFTER INSERT OR UPDATE ON orders
 FOR EACH ROW
 EXECUTE FUNCTION log_status_change();
+
+-- ==================================================
+-- ВНИМАНИЕ: Триггер prevent_double_payment УБРАН!
+-- Теперь разница между unsafe/safe будет видна:
+--   unsafe: race condition -> 2 записи в истории
+--   safe:   FOR UPDATE блокирует -> 1 запись в истории
+-- ==================================================
