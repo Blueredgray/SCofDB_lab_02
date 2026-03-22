@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS order_statuses (
     name VARCHAR(50) UNIQUE NOT NULL
 );
 
-INSERT INTO order_statuses (name) VALUES 
+INSERT INTO order_statuses (name) VALUES
 ('created'), ('paid'), ('cancelled'), ('shipped'), ('completed')
 ON CONFLICT (name) DO NOTHING;
 
@@ -57,12 +57,20 @@ CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_his
 
 -- ==================================================
 -- ТРИГГЕР: Логирование изменений статуса
--- Вставляет запись в историю при каждом изменении статуса
+-- Можно отключить через SET LOCAL app.skip_log_trigger = 'true'
 -- ==================================================
 
 CREATE OR REPLACE FUNCTION log_status_change()
 RETURNS TRIGGER AS $$
+DECLARE
+    skip_trigger text;
 BEGIN
+    -- Проверка переменной сессии для отключения триггера
+    skip_trigger := current_setting('app.skip_log_trigger', true);
+    IF skip_trigger = 'true' THEN
+        RETURN NEW;
+    END IF;
+
     IF (TG_OP = 'INSERT') OR (OLD.status IS DISTINCT FROM NEW.status) THEN
         INSERT INTO order_status_history (id, order_id, status, changed_at)
         VALUES (uuid_generate_v4(), NEW.id, NEW.status, NOW());
@@ -78,8 +86,34 @@ FOR EACH ROW
 EXECUTE FUNCTION log_status_change();
 
 -- ==================================================
--- ВНИМАНИЕ: Триггер prevent_double_payment УБРАН!
--- Теперь разница между unsafe/safe будет видна:
---   unsafe: race condition -> 2 записи в истории
---   safe:   FOR UPDATE блокирует -> 1 запись в истории
+-- ТРИГГЕР: Предотвращение двойной оплаты
+-- Можно обойти через SET LOCAL app.bypass_payment_check = 'true'
 -- ==================================================
+
+CREATE OR REPLACE FUNCTION prevent_double_payment()
+RETURNS TRIGGER AS $$
+DECLARE
+    bypass_check text;
+BEGIN
+    bypass_check := current_setting('app.bypass_payment_check', true);
+    IF bypass_check = 'true' THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.status = 'paid' THEN
+        IF EXISTS (
+            SELECT 1 FROM order_status_history
+            WHERE order_id = NEW.id AND status = 'paid'
+        ) THEN
+            RAISE EXCEPTION 'Order % has already been paid.', NEW.id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_prevent_double_payment ON orders;
+CREATE TRIGGER trg_prevent_double_payment
+BEFORE UPDATE ON orders
+FOR EACH ROW
+EXECUTE FUNCTION prevent_double_payment();

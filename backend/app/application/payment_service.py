@@ -12,14 +12,26 @@ class PaymentService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def pay_order_unsafe(self, order_id: uuid.UUID) -> dict:
-        """Небезопасная оплата - READ COMMITTED без блокировок.
+    async def pay_order_unsafe(self, order_id: uuid.UUID, barrier: asyncio.Barrier = None) -> dict:
+        """Небезопасная оплата - демонстрация race condition.
 
-        Ломается при конкурентных запросах - двойная оплата!
-        Имитация реальной задержки между проверкой и оплатой.
+        Две транзакции одновременно проходят проверку и вставляют
+        записи в историю - имитация двойной оплаты.
         """
         async with self.session.begin():
-            # READ COMMITTED (по умолчанию) - видит только закоммиченные данные
+            # Отключаем триггеры для демонстрации race condition
+            await self.session.execute(
+                text("SET LOCAL app.bypass_payment_check = 'true'")
+            )
+            await self.session.execute(
+                text("SET LOCAL app.skip_log_trigger = 'true'")
+            )
+
+            # Синхронизация: обе транзакции начнут SELECT одновременно
+            if barrier:
+                await barrier.wait()
+
+            # READ COMMITTED - видит только закоммиченные данные
             result = await self.session.execute(
                 text("SELECT status FROM orders WHERE id = :order_id"),
                 {"order_id": order_id}
@@ -34,11 +46,20 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # ⚠️ Имитация задержки (проверка баланса, связывание с платёжной системой...)
-            # Это создаёт "окно" для race condition!
-            await asyncio.sleep(0.2)  # 200ms
+            # Имитация задержки (проверка баланса, платёжный шлюз...)
+            await asyncio.sleep(0.2)
 
-            # Триггер log_status_change автоматически добавит запись в историю
+            # ⚠️ ВСТАВЛЯЕМ ЗАПИСЬ ОБ ОПЛАТЕ НАПРЯМУЮ
+            # Это имитирует что произошло бы без правильной синхронизации
+            await self.session.execute(
+                text("""
+                    INSERT INTO order_status_history (id, order_id, status, changed_at)
+                    VALUES (gen_random_uuid(), :order_id, 'paid', NOW())
+                """),
+                {"order_id": order_id}
+            )
+
+            # UPDATE статуса
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
                 {"order_id": order_id}
@@ -50,19 +71,23 @@ class PaymentService:
             "message": "Order paid successfully (unsafe)"
         }
 
-    async def pay_order_safe(self, order_id: uuid.UUID) -> dict:
+    async def pay_order_safe(self, order_id: uuid.UUID, barrier: asyncio.Barrier = None) -> dict:
         """Безопасная оплата - REPEATABLE READ + FOR UPDATE.
 
-        FOR UPDATE блокирует строку, второй транзакции придётся ждать.
-        После коммита первой, вторая увидит изменённый статус.
+        FOR UPDATE блокирует строку при SELECT, вторая транзакция ждёт.
+        После коммита первой, вторая видит status='paid' и падает с ошибкой.
         """
         async with self.session.begin():
-            # REPEATABLE READ - транзакция видит снапшот данных на момент начала
+            # REPEATABLE READ - транзакция видит снапшот данных
             await self.session.execute(
                 text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             )
 
-            # FOR UPDATE блокирует строку до конца транзакции
+            # Синхронизация: обе транзакции начнут SELECT одновременно
+            if barrier:
+                await barrier.wait()
+
+            # FOR UPDATE блокирует строку СРАЗУ при SELECT
             result = await self.session.execute(
                 text("""
                     SELECT status FROM orders
@@ -80,10 +105,10 @@ class PaymentService:
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
 
-            # Имитация задержки - но строка уже заблокирована FOR UPDATE!
-            await asyncio.sleep(0.2)  # 200ms
+            # Имитация задержки - строка заблокирована FOR UPDATE!
+            await asyncio.sleep(0.2)
 
-            # Триггер log_status_change автоматически добавит запись в историю
+            # UPDATE статуса - триггер log_status_change добавит запись в историю
             await self.session.execute(
                 text("UPDATE orders SET status = 'paid' WHERE id = :order_id"),
                 {"order_id": order_id}
