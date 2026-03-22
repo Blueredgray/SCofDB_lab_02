@@ -1,5 +1,6 @@
 """Сервис оплаты с демонстрацией race condition."""
 import uuid
+import asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.exceptions import OrderAlreadyPaidError, OrderNotFoundError
@@ -15,7 +16,7 @@ class PaymentService:
         """Небезопасная оплата - READ COMMITTED без блокировок.
 
         Ломается при конкурентных запросах - двойная оплата!
-        Триггер log_status_change записывает в историю после каждого UPDATE.
+        Имитация реальной задержки между проверкой и оплатой.
         """
         async with self.session.begin():
             # READ COMMITTED (по умолчанию) - видит только закоммиченные данные
@@ -32,6 +33,10 @@ class PaymentService:
 
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
+
+            # ⚠️ Имитация задержки (проверка баланса, связывание с платёжной системой...)
+            # Это создаёт "окно" для race condition!
+            await asyncio.sleep(0.2)  # 200ms
 
             # Триггер log_status_change автоматически добавит запись в историю
             await self.session.execute(
@@ -74,6 +79,9 @@ class PaymentService:
 
             if status != 'created':
                 raise OrderAlreadyPaidError(f"Order {order_id} already paid")
+
+            # Имитация задержки - но строка уже заблокирована FOR UPDATE!
+            await asyncio.sleep(0.2)  # 200ms
 
             # Триггер log_status_change автоматически добавит запись в историю
             await self.session.execute(
